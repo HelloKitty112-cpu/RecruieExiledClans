@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -22,18 +22,49 @@ using TaleWorlds.CampaignSystem.GameMenus;
 using TaleWorlds.Engine;
 using TaleWorlds.InputSystem;
 using TaleWorlds.CampaignSystem.CharacterDevelopment;
+using System.Diagnostics;
 
 namespace JoinMyKingdom
 {
-    internal class RecruitExiledClans : CampaignBehaviorBase
+    internal class RecruitExiledClans : CampaignBehaviorBase, IDisposable
     {
+        private static RecruitExiledClans _activeInstance;
+        private bool _isDisabled = false;
+        private bool _disposed = false; //
+        private static int _instanceCount = 0;  // 实例总数计数器
+        private int _instanceId;  // 实例ID
         private bool autojoinon { get; set; }
+        private bool debug { get; set; }
         public RecruitExiledClans(AIClansAutoJoin setting)
         {
+            if (_activeInstance != null)
+            {
+                _activeInstance.Dispose();
+            }
+            _activeInstance = this;
+            _isDisabled = false;
+            debug = setting.debuglog;
             autojoinon = setting.autojoinon;
+            _instanceId = ++_instanceCount;  // 分配唯一ID
+            if(debug)
+            {
+            Displaymessage($"[自动加入] 创建实例 #{_instanceId} (总实例数: {_instanceCount})", Color.White);
+
+            }
         }
         public override void SyncData(IDataStore dataStore)
-        { }
+        
+        {
+            if (dataStore.IsLoading)
+            {
+                if (_activeInstance != null && _activeInstance != this)
+                {
+                    _activeInstance.Dispose(); //调用Dispose
+                }
+                _activeInstance = this;
+                _isDisabled = false;
+            }
+        }
         public override void RegisterEvents()
         {
             CampaignEvents.WeeklyTickEvent.AddNonSerializedListener(this, new Action(this.AIClansAutoJoin));
@@ -76,8 +107,13 @@ namespace JoinMyKingdom
         }
         private void AIClansAutoJoin()
         {
-            if (!autojoinon)
-                return;
+            if (_isDisabled || !autojoinon) return;
+            if (debug)
+            {
+            Displaymessage($"[自动加入] 实例 #{_instanceId} 正在执行 AIClansAutoJoin", Color.White);
+
+            }
+            long startTime = DateTime.Now.Ticks;
             try
             {
                 // 获取所有符合条件的AI家族
@@ -95,11 +131,17 @@ namespace JoinMyKingdom
 
                 if (eligibleClans.Count == 0)
                 {
-                    Debug.Print("[自动加入] 没有符合条件的流亡家族");
+                    //Debug.Print("[自动加入] 没有符合条件的流亡家族");
+                    long endTime2 = DateTime.Now.Ticks;
+                    if(debug)
+                    {
+                    Displaymessage($"本次处理耗时: {(endTime2 - startTime) / 10000}ms", Color.White);
+
+                    }
                     return;
                 }
 
-                Debug.Print($"[自动加入] 找到 {eligibleClans.Count} 个符合条件的流亡家族");
+                //Debug.Print($"[自动加入] 找到 {eligibleClans.Count} 个符合条件的流亡家族");
 
                 foreach (var clan in eligibleClans)
                 {
@@ -108,8 +150,19 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 错误: {ex.Message}");
+                //Debug.Print($"[自动加入] 错误: {ex.Message}");
             }
+            long endTime = DateTime.Now.Ticks;
+            if(debug)
+            {
+            Displaymessage($"本次处理耗时: {(endTime - startTime) / 10000}ms", Color.White);
+
+            }
+
+        }
+        private static void Displaymessage(string str, Color color)
+        {
+            InformationManager.DisplayMessage(new InformationMessage(new TextObject(str, null).ToString(), color));
         }
 
         /// <summary>
@@ -146,11 +199,11 @@ namespace JoinMyKingdom
                 //    return;
                 //}
 
-                Debug.Print($"[自动加入] {clan.Name} 没有找到合适的国家加入");
+                //Debug.Print($"[自动加入] {clan.Name} 没有找到合适的国家加入");
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 处理家族 {clan.Name} 时出错: {ex.Message}");
+                //Debug.Print($"[自动加入] 处理家族 {clan.Name} 时出错: {ex.Message}");
             }
         }
 
@@ -161,30 +214,27 @@ namespace JoinMyKingdom
         {
             try
             {
-                // 获取所有朋友（关系大于0的）
-                var friends = Hero.AllAliveHeroes
-                    .Where(hero =>
-                        hero != clanLeader &&
-                        hero.Clan != null &&
-                        hero.Clan.Kingdom != null &&
-                        hero.GetRelation(clanLeader) >= 0) // 关系阈值
-                    .OrderByDescending(hero => hero.GetRelation(clanLeader))
-                    .ToList();
+                Hero bestFriend = null;
+                int bestRelation = -1; // 初始化为-1，只找关系>=0的朋友
 
-                if (friends.Count == 0)
+                // 只记录关系值最高的英雄，避免整个列表的排序
+                foreach (var hero in Hero.AllAliveHeroes)
                 {
-                    return null;
+                    if (hero == clanLeader || hero.Clan?.Kingdom == null) continue;
+
+                    int relation = hero.GetRelation(clanLeader);
+                    if (relation >= 0 && relation > bestRelation) // 关系为正且更高
+                    {
+                        bestRelation = relation;
+                        bestFriend = hero;
+                    }
                 }
 
-                // 优先选择关系最好的朋友
-                var bestFriend = friends.First();
-
-                // 如果没有重要朋友，选择关系最好的普通朋友
-                return bestFriend.Clan.Kingdom;
+                return bestFriend?.Clan?.Kingdom; // 找到就返回其国家，没找到就返回null
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 获取最好朋友国家时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 获取最好朋友国家时出错: {ex.Message}");
                 return null;
             }
         }
@@ -233,7 +283,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 获取关系最好国家时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 获取关系最好国家时出错: {ex.Message}");
                 return null;
             }
         }
@@ -282,7 +332,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 获取最合适国家时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 获取最合适国家时出错: {ex.Message}");
                 return null;
             }
         }
@@ -317,7 +367,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 计算国家关系分数时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 计算国家关系分数时出错: {ex.Message}");
                 return score;
             }
         }
@@ -338,7 +388,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 计算国家适合度分数时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 计算国家适合度分数时出错: {ex.Message}");
                 return score;
             }
         }
@@ -358,7 +408,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] 检查是否可以加入国家时出错: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] 检查是否可以加入国家时出错: {ex.Message}");
                 return false;
             }
         }
@@ -371,10 +421,10 @@ namespace JoinMyKingdom
             try
             {
                 // 记录加入前的状态
-                Debug.Print($"[自动加入] {clan.Name} 正在加入 {kingdom.Name} ({reason})");
+                TaleWorlds.Library.Debug.Print($"[自动加入] {clan.Name} 正在加入 {kingdom.Name} ({reason})");
 
                 // 执行加入操作
-                ChangeKingdomAction.ApplyByJoinToKingdom(clan, kingdom, default(CampaignTime), true);
+                ChangeKingdomAction.ApplyByJoinToKingdom(clan, kingdom, default(CampaignTime), true);//default(CampaignTime),
 
                 // 提高与统治者的关系
                 if (kingdom.RulingClan != null && kingdom.RulingClan.Leader != null)
@@ -388,7 +438,7 @@ namespace JoinMyKingdom
                 }
 
                 // 记录日志
-                Debug.Print($"[自动加入] {clan.Name} 成功加入 {kingdom.Name} ({reason})");
+                TaleWorlds.Library.Debug.Print($"[自动加入] {clan.Name} 成功加入 {kingdom.Name} ({reason})");
 
                 Kingdom playerKingdom = Hero.MainHero?.Clan?.Kingdom;
 
@@ -431,7 +481,7 @@ namespace JoinMyKingdom
             }
             catch (Exception ex)
             {
-                Debug.Print($"[自动加入] {clan.Name} 加入 {kingdom.Name} 失败: {ex.Message}");
+                TaleWorlds.Library.Debug.Print($"[自动加入] {clan.Name} 加入 {kingdom.Name} 失败: {ex.Message}");
             }
         }
         private float CalculateCultureScore(Clan clan, Kingdom kingdom)
@@ -447,8 +497,32 @@ namespace JoinMyKingdom
             tempkingdom = ((mainheroclan != null) ? mainheroclan.Kingdom : null);
             Kingdom playerKingdom = tempkingdom;
             Clan clan = Hero.OneToOneConversationHero.Clan;
-            ChangeKingdomAction.ApplyByJoinToKingdom(clan, playerKingdom, default(CampaignTime), true);
+            ChangeKingdomAction.ApplyByJoinToKingdom(clan, playerKingdom, default(CampaignTime), true);//default(CampaignTime),
             ChangeRelationAction.ApplyPlayerRelation(Hero.OneToOneConversationHero, 30, true, true);
+        }
+        public void Dispose()
+        {
+            if (!_disposed)
+            {
+                // 1. 从全局事件中移除监听，断开游戏引擎对本实例的强引用
+                CampaignEvents.WeeklyTickEvent.ClearListeners(this);
+                CampaignEvents.OnSessionLaunchedEvent.ClearListeners(this);
+
+                _disposed = true;
+                _isDisabled = true; // 确保逻辑也被禁用
+                GC.SuppressFinalize(this); // 通知GC此对象已手动清理
+
+                if (debug)
+                {
+                    Displaymessage($"[自动加入] 实例 #{_instanceId} 已清理并释放", Color.White);
+                }
+            }
+        }
+
+        // 析构函数,防止不清理
+        ~RecruitExiledClans()
+        {
+            Dispose();
         }
     }
 }
